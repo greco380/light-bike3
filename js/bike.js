@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   CELL_SIZE, TRAIL_W, TRAIL_H, BIKE_Y, GLOW_Y,
   DIR_ANGLE, DIR_VECTOR, TURN_LEFT, TURN_RIGHT,
+  JUMP_HEIGHT_WORLD, JUMP_DURATION_MS, MAX_JUMPS,
   gridToWorld,
 } from './constants.js';
 
@@ -18,9 +19,17 @@ export class Bike {
     this.pendingTurn = null; // 'LEFT' | 'RIGHT'
 
     // Trail segment bookkeeping
-    this.segStart  = { gx, gz };   // start of the current growing segment
-    this.activeSeg = null;         // the mesh being extended this straight run
-    this.segments  = [];           // finalised (static) segment meshes
+    this.segStart  = { gx, gz };
+    this.activeSeg = null;
+    this.segments  = [];           // finalised static segment meshes
+
+    // Grid cells this bike has claimed — used to clear the grid on death
+    this._trailGridCells = [];
+
+    // Jump state
+    this.jumpCount    = 0;
+    this._jumpStartMs = 0;         // 0 = not jumping
+    this._wasJumping  = false;
 
     this._trailMat = new THREE.MeshStandardMaterial({
       color:             this.color,
@@ -35,12 +44,49 @@ export class Bike {
 
   // ─── Public ───────────────────────────────────────────────────────────────
 
-  queueTurn(side) {          // side: 'LEFT' | 'RIGHT'
+  queueTurn(side) {
     if (this.alive) this.pendingTurn = side;
   }
 
-  // Return the grid cell the bike will occupy on the NEXT tick
-  // (accounts for any pending turn)
+  isJumping() {
+    return this._jumpStartMs > 0
+      && (performance.now() - this._jumpStartMs) < JUMP_DURATION_MS;
+  }
+
+  jump() {
+    if (!this.alive || this.jumpCount >= MAX_JUMPS || this.isJumping()) return;
+    this.jumpCount++;
+    this._jumpStartMs = performance.now();
+  }
+
+  // Called by Game when marking a grid cell that belongs to this bike
+  recordTrailCell(gx, gz) {
+    this._trailGridCells.push({ gx, gz });
+  }
+
+  // Remove this bike's trail from the scene AND clear its cells in grid[][]
+  clearTrail(grid) {
+    this._trailGridCells.forEach(({ gx, gz }) => {
+      if (grid[gz]?.[gx] === this.id) grid[gz][gx] = null;
+    });
+    this._trailGridCells = [];
+
+    if (this.activeSeg) {
+      this.scene.remove(this.activeSeg);
+      this.activeSeg.geometry.dispose();
+      this.activeSeg = null;
+    }
+    this.segments.forEach(m => {
+      this.scene.remove(m);
+      m.geometry.dispose();
+    });
+    this.segments = [];
+
+    // Reset segment start so a new trail can begin if somehow still alive
+    this.segStart = { gx: this.gx, gz: this.gz };
+  }
+
+  // Peek at the next grid cell without moving (accounts for pending turn)
   peekNext() {
     const dir = this.pendingTurn
       ? (this.pendingTurn === 'LEFT' ? TURN_LEFT[this.dir] : TURN_RIGHT[this.dir])
@@ -49,14 +95,27 @@ export class Bike {
     return { gx: this.gx + v.x, gz: this.gz + v.z };
   }
 
-  // Execute one grid tick.  grid[][] is updated externally before this call.
+  // Execute one grid tick.
+  // Caller is responsible for grid[][] marking (via recordTrailCell) before calling this.
   step() {
-    // Extend trail visual to cover current cell (which we're about to leave)
-    this._extendSegTo(this.gx, this.gz);
+    const jumping = this.isJumping();
+
+    if (this._wasJumping && !jumping) {
+      // Just landed — start a fresh trail segment from landing position
+      this.segStart = { gx: this.gx, gz: this.gz };
+    }
+    this._wasJumping = jumping;
+
+    if (!jumping) {
+      this._extendSegTo(this.gx, this.gz);
+    } else if (this.activeSeg) {
+      // Liftoff — seal the segment at the jump-start cell
+      this._finaliseSegment();
+    }
 
     // Apply turn
     if (this.pendingTurn) {
-      this._finaliseSegment();                   // lock the current segment mesh
+      if (!jumping) this._finaliseSegment();
       this.segStart = { gx: this.gx, gz: this.gz };
       this.dir = this.pendingTurn === 'LEFT'
         ? TURN_LEFT[this.dir] : TURN_RIGHT[this.dir];
@@ -68,11 +127,34 @@ export class Bike {
     this.gx += v.x;
     this.gz += v.z;
 
-    // Sync 3-D model
+    // Update XZ immediately; Y is handled smoothly by updateVisual() every frame
     const { x, z } = gridToWorld(this.gx, this.gz);
-    this.mesh.position.set(x, BIKE_Y, z);
+    this.mesh.position.x = x;
+    this.mesh.position.z = z;
     this.mesh.rotation.y = DIR_ANGLE[this.dir];
-    this.glow.position.set(x, GLOW_Y, z);
+    this.glow.position.x = x;
+    this.glow.position.z = z;
+
+    if (!jumping) {
+      this.mesh.position.y = BIKE_Y;
+      this.glow.position.y  = GLOW_Y;
+    }
+  }
+
+  // Called every render frame for smooth jump arc animation
+  updateVisual() {
+    if (this._jumpStartMs === 0) return;
+    const elapsed = performance.now() - this._jumpStartMs;
+    if (elapsed < JUMP_DURATION_MS) {
+      const t = elapsed / JUMP_DURATION_MS;
+      const h = Math.sin(t * Math.PI) * JUMP_HEIGHT_WORLD;
+      this.mesh.position.y = BIKE_Y + h;
+      this.glow.position.y  = GLOW_Y  + h;
+    } else {
+      this.mesh.position.y = BIKE_Y;
+      this.glow.position.y  = GLOW_Y;
+      this._jumpStartMs = 0;
+    }
   }
 
   die() {
@@ -103,9 +185,9 @@ export class Bike {
 
   _buildMesh() {
     const geo = new THREE.BoxGeometry(
-      CELL_SIZE * 1.1,   // length (forward = X axis)
-      CELL_SIZE * 0.32,  // height
-      CELL_SIZE * 0.48,  // width
+      CELL_SIZE * 1.1,
+      CELL_SIZE * 0.32,
+      CELL_SIZE * 0.48,
     );
     const mat = new THREE.MeshStandardMaterial({
       color:             this.color,
@@ -127,7 +209,6 @@ export class Bike {
     this.scene.add(this.glow);
   }
 
-  // Rebuild the growing trail segment so it spans segStart → (toGx, toGz)
   _extendSegTo(toGx, toGz) {
     if (this.activeSeg) {
       this.scene.remove(this.activeSeg);
@@ -138,9 +219,8 @@ export class Bike {
     const { x: wx1, z: wz1 } = gridToWorld(this.segStart.gx, this.segStart.gz);
     const { x: wx2, z: wz2 } = gridToWorld(toGx, toGz);
 
-    const midX = (wx1 + wx2) / 2;
-    const midZ = (wz1 + wz2) / 2;
-
+    const midX  = (wx1 + wx2) / 2;
+    const midZ  = (wz1 + wz2) / 2;
     const horiz = (this.segStart.gz === toGz);
     const cells = horiz
       ? Math.abs(toGx - this.segStart.gx) + 1

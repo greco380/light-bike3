@@ -38,6 +38,35 @@ body {
   transition: opacity 0.5s;
 }
 
+#jump-hud {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+
+.jump-pip {
+  width: 12px;
+  height: 12px;
+  border: 1px solid #00ffff;
+  border-radius: 50%;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.jump-pip.available {
+  background: #00ffff;
+  box-shadow: 0 0 8px #00ffff;
+}
+
+.jump-pip.used {
+  background: transparent;
+  box-shadow: none;
+  opacity: 0.3;
+}
+
 .screen {
   background: rgba(0, 0, 0, 0.88);
   border: 1px solid #00ffff;

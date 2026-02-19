@@ -1,12 +1,17 @@
 export const GRID_SIZE  = 80;
 export const CELL_SIZE  = 2;       // world-units per grid cell
-export const TICK_MS    = 100;     // 10 cells/sec  →  1 tick = 100 ms
+export const TICK_MS      = 77;    // 13 cells/sec  →  1 tick ≈ 77 ms
+export const FAST_TICK_MS = 20;    // fast-forward after player death: ~50/sec
 
 export const TRAIL_W    = CELL_SIZE * 0.36;  // trail tube width (perpendicular)
 export const TRAIL_H    = CELL_SIZE * 0.18;  // trail tube height
 
 export const BIKE_Y     = CELL_SIZE * 0.28;  // bike mesh Y position
 export const GLOW_Y     = CELL_SIZE * 0.5;   // point-light Y position
+
+export const JUMP_HEIGHT_WORLD = CELL_SIZE * 4;   // peak arc height
+export const JUMP_DURATION_MS  = 650;             // ms airborne
+export const MAX_JUMPS         = 2;               // per round
 
 // Convert grid cell → world XZ (grid origin is centre of arena)
 export function gridToWorld(gx, gz) {
